@@ -1,0 +1,16 @@
+# VulnMapper allowlist — out-of-scope targets ONLY
+#
+# One entry per line: an IP, a CIDR range, or a hostname.
+# Lines starting with '#' are comments. Blank lines are ignored.
+#
+# A public target is scanned ONLY if BOTH hold:
+#   1. it is listed here, AND
+#   2. you pass --i-have-authorization (confirming written authorization).
+#
+# Localhost and private lab ranges (127.0.0.0/8, 10.0.0.0/8,
+# 172.16.0.0/12, 192.168.0.0/16) never need an entry here.
+#
+# Examples (uncomment and edit only for systems you are authorized to test):
+# 203.0.113.10
+# 203.0.113.0/24
+# lab.example.com
