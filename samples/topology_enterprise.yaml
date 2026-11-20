@@ -1,0 +1,165 @@
+# VulnMapper v2 — enterprise lab topology (SAMPLE DATA ONLY)
+# 8 hosts, 3 zones: dmz, internal, crown-jewel.
+# All IPs are RFC 5737 / private-lab ranges. No real network is described.
+# A host is an "entry point" if internet_facing is true.
+# Trust edges are ALLOWED traffic flows. Firewall rules can deny a flow
+# even if a trust edge exists — deny wins.
+name: enterprise-lab
+crown_jewels:
+  - db-crown
+  - dc-crown
+hosts:
+  - name: web-dmz
+    ip: 10.0.1.10
+    zone: dmz
+    internet_facing: true
+    criticality: 2
+    services:
+      - port: 80
+        service: http
+        version: "2.4.49"
+        banner: "Server: Apache/2.4.49 (Unix)"
+      - port: 22
+        service: ssh
+        version: "7.2p2"
+        banner: "SSH-2.0-OpenSSH_7.2p2"
+  - name: mail-dmz
+    ip: 10.0.1.11
+    zone: dmz
+    internet_facing: true
+    criticality: 2
+    services:
+      - port: 25
+        service: smtp
+        version: "4.92"
+        banner: "Exim 4.92"
+      - port: 443
+        service: http
+        version: "1.18.0"
+        banner: "Server: nginx/1.18.0"
+  - name: app-internal
+    ip: 10.0.2.20
+    zone: internal
+    internet_facing: false
+    criticality: 3
+    services:
+      - port: 8080
+        service: http
+        version: "9.0.0.M1"
+        banner: "Apache Tomcat/9.0.0.M1"
+      - port: 22
+        service: ssh
+        version: "9.6p1"
+        banner: "SSH-2.0-OpenSSH_9.6p1"
+  - name: file-internal
+    ip: 10.0.2.21
+    zone: internal
+    internet_facing: false
+    criticality: 3
+    services:
+      - port: 445
+        service: smb
+        version: "SMBv1"
+        banner: "SMBv1"
+      - port: 22
+        service: ssh
+        version: "7.2p2"
+        banner: "SSH-2.0-OpenSSH_7.2p2"
+  - name: workstation
+    ip: 10.0.2.22
+    zone: internal
+    internet_facing: false
+    criticality: 2
+    services:
+      - port: 3389
+        service: rdp
+        version: "any"
+        banner: "RDP"
+      - port: 22
+        service: ssh
+        version: "8.5p1"
+        banner: "SSH-2.0-OpenSSH_8.5p1"
+  - name: db-crown
+    ip: 10.0.3.30
+    zone: crown-jewel
+    internet_facing: false
+    criticality: 5
+    services:
+      - port: 3306
+        service: mysql
+        version: "5.5.52"
+        banner: "MySQL 5.5.52"
+      - port: 5432
+        service: postgres
+        version: "9.6.1"
+        banner: "PostgreSQL 9.6.1"
+  - name: dc-crown
+    ip: 10.0.3.31
+    zone: crown-jewel
+    internet_facing: false
+    criticality: 5
+    services:
+      - port: 445
+        service: smb
+        version: "4.6.0"
+        banner: "Samba 4.6.0"
+      - port: 53
+        service: dns
+        version: "9.11.0"
+        banner: "BIND 9.11.0"
+  - name: backup-isolated
+    ip: 10.0.2.99
+    zone: internal
+    internet_facing: false
+    criticality: 1
+    isolated: true
+    services:
+      - port: 21
+        service: ftp
+        version: "2.3.4"
+        banner: "220 (vsFTPd 2.3.4)"
+trust:
+  - from: internet
+    to: web-dmz
+  - from: internet
+    to: mail-dmz
+  - from: web-dmz
+    to: app-internal
+  - from: web-dmz
+    to: file-internal
+  - from: mail-dmz
+    to: app-internal
+  - from: file-internal
+    to: app-internal
+  - from: file-internal
+    to: dc-crown
+  - from: workstation
+    to: file-internal
+  - from: workstation
+    to: app-internal
+  - from: app-internal
+    to: db-crown
+  - from: app-internal
+    to: dc-crown
+firewall_rules:
+  - from: internet
+    to: db-crown
+    action: deny
+  - from: internet
+    to: dc-crown
+    action: deny
+  - from: internet
+    to: app-internal
+    action: deny
+  - from: web-dmz
+    to: db-crown
+    action: deny
+  - from: web-dmz
+    to: dc-crown
+    action: deny
+  - from: internet
+    to: backup-isolated
+    action: deny
+  - from: backup-isolated
+    to: db-crown
+    action: deny

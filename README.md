@@ -9,6 +9,103 @@
 
 VulnMapper is a defensive-security tool for **your own lab and for systems you have explicit written authorization to test**. Point it at a host, and in seconds it tells you which ports are open, what is (probably) running on them, which known CVEs match the detected versions, and what to fix first — as JSON and as a readable HTML report.
 
+## v2.0 — Advanced: Attack-Path Graph (NEW)
+
+**The original concept: Reachability-Aware Exposure, not CVSS alone.**
+
+v1 ranked vulnerabilities by CVSS. That is how most scanners work — and it is
+wrong in a specific, fixable way: a CVSS 9.8 on a host no attacker can reach
+is less urgent than a CVSS 7.5 on the one path into your database. v2 models
+the network as a graph and ranks by *exposure*, so the patch order changes.
+
+```
+Exposure = CVSS × exploitability × reachability × asset criticality
+```
+
+- **CVSS** — how bad the flaw is in isolation (0–10, from `data/cve_db.json`).
+- **Exploitability** — how likely it is to be exploited in the wild (0–1,
+  EPSS-like, from `data/exploitability.json`; public exploit yes/no).
+- **Reachability** — 1.0 if the host sits on an attack path to a crown jewel,
+  0.3 if it does not.
+- **Asset criticality** — 1–5 from the topology (crown jewel = 5).
+
+### What v2 adds
+
+| v2 module | What it does |
+|---|---|
+| `src/topology.py` | Parses a network topology (`data/topology.yaml`, stdlib YAML subset): hosts, zones, trust edges, firewall rules, crown-jewel assets |
+| `src/attack_graph.py` | Enumerates attack paths (BFS/DFS) from internet-facing entry points through exploitable services to crown jewels; shortest path, all paths up to length 4, choke points (hosts in >50% of paths) |
+| `src/exposure.py` | Exposure scoring and ranking — see the formula above |
+| `src/whatif.py` | Remediation simulation: "patch X → Y paths close", residual exposure, greedy next-best patch |
+| `src/combo.py` | Toxic combination detection — medium findings that chain into something worse |
+
+### Run v2 (demo data — no live network)
+
+```bash
+python vulnmapper_v2.py --topology samples/topology_enterprise.yaml \
+  --scan samples/scan_enterprise.json --output reports/exposure.json --html
+
+python vulnmapper_v2.py --topology samples/topology_enterprise.yaml \
+  --scan samples/scan_enterprise.json --output reports/exposure.json \
+  --whatif patch_app_internal
+```
+
+The enterprise sample is 8 hosts in 3 zones (DMZ, internal, crown-jewel).
+v2 finds **7 attack paths** to the crown jewels. Shortest path to the database:
+`mail-dmz → app-internal → db-crown` (3 hosts). Choke point:
+**app-internal is on 6/7 paths (86%)** — patching or segmenting it closes
+the most paths at once.
+
+### Sample exposure ranking — the inversion
+
+| Exposure | Host | CVE | CVSS | On path? |
+|---|---|---|---|---|
+| 31.00 | dc-crown | CVE-2017-7494 (Samba RCE) | 10.0 | yes |
+| 25.34 | file-internal | CVE-2017-0144 (EternalBlue) | 8.8 | yes |
+| 21.38 | app-internal | CVE-2024-6387 (regreSSHion) | 8.1 | yes |
+| 13.65 | web-dmz | CVE-2021-41773 (Apache RCE) | 7.5 | yes |
+| 5.53 | workstation | CVE-2019-0708 (BlueKeep) | 9.8 | no |
+| **2.85** | **backup-isolated** | **CVE-2011-2523 (vsFTPd backdoor)** | **9.8** | **no** |
+
+The vsFTPd backdoor is CVSS 9.8 — the highest score in the estate — but it
+sits on an isolated backup host with no path to anything that matters, so its
+exposure is 2.85 and it ranks **11th of 15**. The Apache flaw is "only" CVSS 7.5,
+but it is on the path to the database, so its exposure is 13.65 and it ranks
+7th. CVSS-only triage would patch the backup box first. Exposure triage
+patches the path first.
+
+### What-if example
+
+Patching SMBv1 alone sounds like the obvious fix — it removes 25.34 exposure —
+but it closes **0 of 7 paths**, because the file host is still exploitable
+over SSH. The simulator says so, and recommends the next best patch instead:
+
+```
+What-if [patch_smbv1]: 0/7 paths closed, residual exposure 138.22 (was 163.56).
+Next best patch: patch_app_internal (closes 6 more).
+```
+
+Patching `app-internal` (the choke point) closes **6/7 paths** and drops total
+exposure from 163.56 to 97.13. That is the difference between "patch the
+scariest CVE" and "patch the thing that closes the most attack paths".
+
+### Toxic combinations
+
+v2 also flags findings that are dangerous *together*, even when each one is
+only medium on its own. In the enterprise sample it flags three, including:
+
+- **Lateral-movement chain (Critical)** — SMBv1 + weak SSH + exposed RDP
+  co-existing in the same estate: one foothold can spread host-to-host.
+- **Web RCE + reachable database (High)** — Apache RCE plus a MySQL flaw on
+  a host the web tier can reach.
+- **Two internet-facing RCEs (High)** — Exim RCE plus Tomcat Ghostcat:
+  two independent front doors, so patching only one leaves the other open.
+
+v1 is unchanged and still works exactly as before (`python vulnmapper.py …`).
+v2 is a second engine alongside it — `python vulnmapper_v2.py …` — built on
+the same CVE database, the same safety rules, and the same demo-only data.
+No exploit code, no live scanning beyond localhost/demo data.
+
 > **LEGAL / ETHICAL NOTICE — READ FIRST**
 > **Scan only systems you own or have explicit written authorization to test. Scanning without authorization may be illegal (e.g. CFAA, Computer Misuse Act, PECA in Pakistan). VulnMapper refuses public IPs by default, prints this warning on every run, and contains no exploit code, no brute-force, and no payloads.**
 
@@ -130,16 +227,30 @@ Summary line from the JSON report:
 
 ```
 vulnmapper/
-├── vulnmapper.py          # CLI entry point
+├── vulnmapper.py          # v1 CLI entry point
+├── vulnmapper_v2.py       # v2 CLI — attack-path / exposure graph
 ├── src/
 │   ├── safety.py          # allowlist + authorization enforcement
 │   ├── scanner.py         # threaded TCP connect scan
 │   ├── banner.py          # banner grab, service guess, version regex
 │   ├── cve.py             # CVE matching + CVSS ordering
-│   └── report.py          # JSON + HTML report generation
-├── data/cve_db.json       # curated CVE database (25 entries)
-├── samples/scan_localhost.json   # demo scan data
-├── tests/test_vulnmapper.py      # unittest suite (20+ tests)
+│   ├── report.py          # JSON + HTML report generation (v1)
+│   ├── topology.py        # v2: topology YAML parser (stdlib only)
+│   ├── attack_graph.py    # v2: attack-path enumeration + choke points
+│   ├── exposure.py        # v2: Exposure scoring + HTML report
+│   ├── whatif.py          # v2: remediation simulation, next-best patch
+│   └── combo.py           # v2: toxic combination detection
+├── data/
+│   ├── cve_db.json            # curated CVE database (25 entries)
+│   ├── exploitability.json    # EPSS-like exploitability per CVE (25 entries)
+│   └── topology.yaml          # default enterprise topology
+├── samples/
+│   ├── scan_localhost.json        # v1 demo scan data
+│   ├── scan_enterprise.json       # v2 demo scan (8 hosts)
+│   └── topology_enterprise.yaml   # v2 demo topology (8 hosts, 3 zones)
+├── tests/
+│   ├── test_vulnmapper.py   # v1 unittest suite (22 tests)
+│   └── test_v2.py           # v2 unittest suite (19 tests)
 ├── allowlist.txt          # out-of-scope targets (empty by default)
 ├── requirements.txt       # stdlib only — no dependencies
 └── reports/               # generated reports (git-ignored)
@@ -155,9 +266,12 @@ vulnmapper/
 
 ```bash
 python -m unittest discover -s tests -v
+# Ran 41 tests — OK (22 v1 + 19 v2)
 ```
 
-Covers: allowlist blocking a public IP (with and without the flag), allowlist + flag allowing a listed IP, localhost/private ranges, banner parsing (SSH / Apache / vsFTPd), service guessing, CVE matching (including the vsFTPd backdoor and a patched-version negative), CVSS ordering, port parsing, a live localhost scan against a real TCP listener, and a closed-port negative.
+v1 covers: allowlist blocking a public IP (with and without the flag), allowlist + flag allowing a listed IP, localhost/private ranges, banner parsing (SSH / Apache / vsFTPd), service guessing, CVE matching (including the vsFTPd backdoor and a patched-version negative), CVSS ordering, port parsing, a live localhost scan against a real TCP listener, and a closed-port negative.
+
+v2 covers: topology parsing (8 hosts, 3 zones, firewall denies), shortest path to the database, all paths ≤ 4 hosts ending at a crown jewel, choke-point detection, isolated host on no path, the exposure formula, the CVSS 9.8-isolated / CVSS 7.5-on-path ranking inversion, exploitability coverage for all 25 CVEs, what-if patching (choke-point patch closes 6/7 paths, single-CVE patch closes a small-topology path, next-best-patch recommendation), toxic-combination detection and its negative, and a CLI end-to-end run.
 
 ## Roadmap
 
